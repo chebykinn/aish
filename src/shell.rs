@@ -1,16 +1,16 @@
-use std::env;
-use std::io::{self, BufRead, BufReader};
-use std::process::{Command, Stdio, Child};
-use std::collections::HashMap;
-use std::fs::File;
 use rustyline::Editor;
+use std::collections::HashMap;
+use std::env;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader};
+use std::process::{Child, Command, Stdio};
 // use nix::sys::signal::{self, Signal};
 // use nix::unistd::{self, Pid};
 
-use crate::parser::{Parser, CommandLine, SimpleCommand, RedirectionType};
 use crate::builtins::Builtins;
-use crate::markdown::{MarkdownScript, is_markdown_file};
 use crate::context::LLMActionProcessor;
+use crate::markdown::{is_markdown_file, MarkdownScript};
+use crate::parser::{CommandLine, Parser, RedirectionType, SimpleCommand};
 
 pub struct Shell {
     editor: Editor<()>,
@@ -25,17 +25,20 @@ pub struct Shell {
 impl Shell {
     pub fn new() -> Self {
         let mut env_vars = HashMap::new();
-        
+
         // Initialize with system environment variables
         for (key, value) in env::vars() {
             env_vars.insert(key, value);
         }
-        
+
         // Set default PATH if not present
         if !env_vars.contains_key("PATH") {
-            env_vars.insert("PATH".to_string(), "/usr/local/bin:/usr/bin:/bin".to_string());
+            env_vars.insert(
+                "PATH".to_string(),
+                "/usr/local/bin:/usr/bin:/bin".to_string(),
+            );
         }
-        
+
         // Set default PS1 prompt
         if !env_vars.contains_key("PS1") {
             env_vars.insert("PS1".to_string(), "aish$ ".to_string());
@@ -58,25 +61,26 @@ impl Shell {
 
     pub async fn run_interactive(&mut self) -> io::Result<()> {
         self.setup_signal_handlers()?;
-        
-        println!("Welcome to aish - A simple shell");
+
+        println!("Welcome to aish - AI-Enhanced Shell");
         println!("Type 'exit' or use Ctrl+D to quit");
+        println!("This shell uses natural language commands");
 
         while !self.exit_requested {
             self.cleanup_background_jobs();
-            
+
             let prompt = self.get_prompt();
-            
+
             match self.editor.readline(&prompt) {
                 Ok(line) => {
                     let line = line.trim();
                     if line.is_empty() {
                         continue;
                     }
-                    
+
                     self.editor.add_history_entry(line);
-                    
-                    if let Err(e) = self.execute_line(line) {
+
+                    if let Err(e) = self.execute_line_interactive(line).await {
                         eprintln!("aish: {}", e);
                     }
                 }
@@ -110,7 +114,7 @@ impl Shell {
 
     pub async fn run_file(&mut self, filename: &str) -> io::Result<()> {
         self.setup_signal_handlers()?;
-        
+
         if is_markdown_file(filename) {
             self.run_markdown_file(filename).await
         } else {
@@ -121,14 +125,17 @@ impl Shell {
     async fn run_markdown_file(&mut self, filename: &str) -> io::Result<()> {
         let content = std::fs::read_to_string(filename)
             .map_err(|e| io::Error::new(e.kind(), format!("aish: {}: {}", filename, e)))?;
-        
-        let script = MarkdownScript::parse(&content)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, 
-                                       format!("Failed to parse markdown: {}", e)))?;
-        
+
+        let script = MarkdownScript::parse(&content).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Failed to parse markdown: {}", e),
+            )
+        })?;
+
         println!("[SYS] Executing intelligent markdown script: {}", filename);
         println!("[SYS] {}", self.llm_processor.get_context_info());
-        
+
         // Display headers as labels/comments (non-actionable)
         let headers = script.get_headers();
         if !headers.is_empty() {
@@ -139,14 +146,14 @@ impl Shell {
             }
         }
         println!();
-        
+
         // Process LLM actions (paragraphs and headers)
         let llm_actions = script.get_llm_actions();
         for (action_index, action) in llm_actions.iter().enumerate() {
             if self.exit_requested {
                 break;
             }
-            
+
             // Print the paragraph content with token usage
             let token_usage = self.llm_processor.get_token_usage();
             match action {
@@ -169,8 +176,11 @@ impl Shell {
                 crate::context::LLMAction::AddToContext { content } => {
                     println!("[CMD] {} Add to context: {}", token_usage, content);
                 }
+                crate::context::LLMAction::ExecuteCommand { command } => {
+                    println!("[CMD] {} Execute: {}", token_usage, command);
+                }
             }
-            
+
             match self.llm_processor.process_action(action.clone()).await {
                 Ok(result) => {
                     println!("{}", result);
@@ -183,52 +193,63 @@ impl Shell {
                 }
             }
         }
-        
+
         // Execute shell code blocks
         let executable_blocks = script.get_executable_blocks();
         for (block_index, (lang, code)) in executable_blocks.iter().enumerate() {
             if self.exit_requested {
                 break;
             }
-            
+
             self.cleanup_background_jobs();
-            
+
             let lang_display = lang.as_deref().unwrap_or("shell");
-            println!("\n[CMD] Executing {} block {} ---", lang_display, block_index + 1);
-            
+            println!(
+                "\n[CMD] Executing {} block {} ---",
+                lang_display,
+                block_index + 1
+            );
+
             // Execute each line in the code block
             for (line_num, line) in code.lines().enumerate() {
                 let line = line.trim();
-                
+
                 // Skip empty lines and comments
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                
+
                 if self.exit_requested {
                     break;
                 }
-                
+
                 println!("$ {}", line);
-                
+
                 if let Err(e) = self.execute_line(line) {
-                    eprintln!("aish: {}: block {}:{}: {}", filename, block_index + 1, line_num + 1, e);
+                    eprintln!(
+                        "aish: {}: block {}:{}: {}",
+                        filename,
+                        block_index + 1,
+                        line_num + 1,
+                        e
+                    );
                     // Continue execution even if a command fails
                 }
             }
         }
-        
+
         // Handle function declarations
         let functions = script.get_functions();
         if !functions.is_empty() {
             println!("\n[SYS] Found {} function declaration(s)", functions.len());
             for func in functions {
-                if let crate::markdown::MarkdownElement::FunctionDeclaration(name, params, _) = func {
+                if let crate::markdown::MarkdownElement::FunctionDeclaration(name, params, _) = func
+                {
                     println!("  func {}({})", name, params.join(", "));
                 }
             }
         }
-        
+
         self.cleanup_all_jobs();
         println!("\n[SYS] Script execution completed");
         println!("[SYS] Final {}", self.llm_processor.get_context_info());
@@ -238,50 +259,99 @@ impl Shell {
     async fn run_shell_script(&mut self, filename: &str) -> io::Result<()> {
         let file = File::open(filename)
             .map_err(|e| io::Error::new(e.kind(), format!("aish: {}: {}", filename, e)))?;
-        
+
         let reader = BufReader::new(file);
         let mut line_number = 0;
-        
+
         for line_result in reader.lines() {
             line_number += 1;
-            
+
             if self.exit_requested {
                 break;
             }
-            
+
             self.cleanup_background_jobs();
-            
+
             let line = line_result?;
             let line = line.trim();
-            
+
             // Skip empty lines and comments
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            
+
             if let Err(e) = self.execute_line(line) {
                 eprintln!("aish: {}:{}: {}", filename, line_number, e);
                 // Continue execution even if a command fails
             }
         }
-        
+
         self.cleanup_all_jobs();
         Ok(())
     }
 
+    // Interactive mode with AI support - uses same parsing as .aish files
+    async fn execute_line_interactive(&mut self, line: &str) -> io::Result<()> {
+        // Create a simple markdown document with just this line as a paragraph
+        let markdown_content = format!("{}\n", line);
+
+        // Parse using the same markdown parser as .aish files
+        let script = match crate::markdown::MarkdownScript::parse(&markdown_content) {
+            Ok(script) => script,
+            Err(_) => {
+                // If markdown parsing fails, treat as traditional shell command
+                return self.execute_line(line);
+            }
+        };
+
+        // Get LLM actions using the same logic as .aish files
+        let llm_actions = script.get_llm_actions();
+
+        if !llm_actions.is_empty() {
+            // Process as AI command using same logic as .aish files
+            for action in llm_actions {
+                let token_usage = self.llm_processor.get_token_usage();
+                match &action {
+                    crate::context::LLMAction::Comment { content } => {
+                        println!("[AI] {} {}", token_usage, content);
+                    }
+                    _ => {} // Other action types handled normally
+                }
+
+                match self.llm_processor.process_action(action).await {
+                    Ok(result) => {
+                        println!("{}", result);
+                        let updated_tokens = self.llm_processor.get_token_usage();
+                        println!("[AI] Complete: {}", updated_tokens);
+                    }
+                    Err(e) => {
+                        eprintln!("AI Error: {}", e);
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            // No LLM actions, execute as traditional shell command
+            self.execute_line(line)
+        }
+    }
+
+    // Traditional shell command execution (synchronous)
     fn execute_line(&mut self, line: &str) -> io::Result<()> {
         match self.parser.parse(line) {
-            Ok(command_line) => {
-                self.execute_command_line(command_line)
-            }
-            Err(e) => {
-                Err(io::Error::new(io::ErrorKind::InvalidInput, format!("Parse error: {}", e)))
-            }
+            Ok(command_line) => self.execute_command_line(command_line),
+            Err(e) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Parse error: {}", e),
+            )),
         }
     }
 
     fn get_prompt(&self) -> String {
-        self.env_vars.get("PS1").unwrap_or(&"aish$ ".to_string()).clone()
+        self.env_vars
+            .get("PS1")
+            .unwrap_or(&"aish$ ".to_string())
+            .clone()
     }
 
     fn execute_command_line(&mut self, command_line: CommandLine) -> io::Result<()> {
@@ -330,10 +400,12 @@ impl Shell {
                     command.stdout(Stdio::from(std::fs::File::create(&redir.filename)?));
                 }
                 RedirectionType::Append => {
-                    command.stdout(Stdio::from(std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&redir.filename)?));
+                    command.stdout(Stdio::from(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&redir.filename)?,
+                    ));
                 }
             }
         }
@@ -464,3 +536,4 @@ impl Shell {
         Ok(())
     }
 }
+

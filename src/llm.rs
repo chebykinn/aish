@@ -545,6 +545,17 @@ impl LLMClient {
                     },
                     "required": ["content"]
                 }
+            }),
+            serde_json::json!({
+                "name": "execute_command",
+                "description": "Execute a shell command and return its output",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command to execute"}
+                    },
+                    "required": ["command"]
+                }
             })
         ];
         
@@ -560,12 +571,13 @@ impl LLMClient {
              Available tools:\n\
              - read_file: Read files into context for analysis\n\
              - clear_context: Clear current context\n\
-             - add_to_context: Add information to context\n\n\
+             - add_to_context: Add information to context\n\
+             - execute_command: Execute shell commands and get their output\n\n\
              IMPORTANT INSTRUCTIONS:\n\
              1. When given a task, think about what information you need to complete it\n\
              2. Use tools to gather information, then analyze and provide insights\n\
              3. If you need multiple steps, use tools in sequence (each tool call triggers a follow-up)\n\
-             4. Only stop calling tools when you have fully completed the task\n\
+             4. If there is no further action needed after using a tool, do NOT respond - stay silent\n\
              5. Be proactive - if a task requires reading files, analysis, or context building, do it automatically\n\
              6. ALWAYS UTILIZE CONTEXT: If context is loaded, use it to answer questions directly\n\n\
              {}",

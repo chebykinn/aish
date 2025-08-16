@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::process::Command;
 
 // Token counting constants
 const MAX_CONTEXT_TOKENS: usize = 200_000; // 200K token limit
@@ -127,6 +128,7 @@ pub enum LLMAction {
     Analyze { content: String },
     Summarize { content: String },
     AddToContext { content: String },
+    ExecuteCommand { command: String },
     Comment { content: String }, // Regular markdown paragraph
 }
 
@@ -216,6 +218,47 @@ impl LLMActionProcessor {
                     content.chars().take(50).collect::<String>(),
                     self.context_manager.get_current_context().len()
                 ))
+            }
+
+            LLMAction::ExecuteCommand { command } => {
+                // Execute shell command and capture output
+                match Command::new("sh")
+                    .arg("-c")
+                    .arg(&command)
+                    .output()
+                {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        let exit_code = output.status.code().unwrap_or(-1);
+                        
+                        let result = if exit_code == 0 {
+                            if stdout.trim().is_empty() {
+                                format!("[SYS] Command '{}' executed successfully (no output)", command)
+                            } else {
+                                format!("[SYS] Command '{}' output:\n{}", command, stdout.trim())
+                            }
+                        } else {
+                            let error_msg = if stderr.trim().is_empty() {
+                                format!("Command '{}' failed with exit code {}", command, exit_code)
+                            } else {
+                                format!("Command '{}' failed with exit code {}:\n{}", command, exit_code, stderr.trim())
+                            };
+                            format!("[SYS] {}", error_msg)
+                        };
+                        
+                        // Add command output to context for future reference
+                        if exit_code == 0 && !stdout.trim().is_empty() {
+                            self.context_manager.add_to_context(&format!("Command output from '{}':\n{}", command, stdout.trim()));
+                        }
+                        
+                        Ok(result)
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to execute command '{}': {}", command, e);
+                        Ok(format!("[SYS] {}", error_msg))
+                    }
+                }
             }
 
             LLMAction::Comment { content } => {
@@ -342,6 +385,19 @@ impl LLMActionProcessor {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "Missing content parameter",
+                    ))
+                }
+            }
+            "execute_command" => {
+                if let Some(command) = input.get("command").and_then(|v| v.as_str()) {
+                    let action = crate::context::LLMAction::ExecuteCommand {
+                        command: command.to_string(),
+                    };
+                    Box::pin(self.process_action(action)).await
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "Missing command parameter",
                     ))
                 }
             }
