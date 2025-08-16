@@ -1,0 +1,126 @@
+# AISH Shell Language Grammar
+# This grammar defines the syntax for the aish shell language
+
+# Program structure
+program ::= (markdown_paragraph | code_block | function_declaration)*
+
+# Markdown paragraphs become LLM actions
+markdown_paragraph ::= TEXT_CONTENT NEWLINE+
+TEXT_CONTENT ::= [^`]+  # Any text that doesn't start a code block
+
+# Code blocks contain executable shell commands
+code_block ::= CODE_FENCE shell_commands CODE_FENCE
+CODE_FENCE ::= "```" [language_identifier] NEWLINE
+language_identifier ::= "bash" | "shell" | "sh" | "aish" | "zsh" | "fish" | ""
+
+# Shell commands within code blocks
+shell_commands ::= (command_line NEWLINE)*
+command_line ::= pipeline | simple_command | assignment | function_call
+
+# Function declarations
+function_declaration ::= "func" IDENTIFIER "(" parameter_list ")" "{" NEWLINE
+                        function_body
+                        "}" NEWLINE
+
+parameter_list ::= (IDENTIFIER ("," IDENTIFIER)*)?
+function_body ::= (markdown_paragraph | code_block)*
+
+# Shell command types
+simple_command ::= IDENTIFIER argument_list redirection*
+pipeline ::= simple_command ("|" simple_command)+
+assignment ::= IDENTIFIER "=" VALUE
+function_call ::= IDENTIFIER "(" argument_list ")"
+
+# Command components
+argument_list ::= (argument)*
+argument ::= QUOTED_STRING | UNQUOTED_STRING | VARIABLE_EXPANSION
+redirection ::= (">" | "<" | ">>") FILENAME
+
+# Variables and expansions
+VARIABLE_EXPANSION ::= "$" IDENTIFIER | "${" IDENTIFIER "}"
+QUOTED_STRING ::= '"' [^"]* '"' | "'" [^']* "'"
+UNQUOTED_STRING ::= [^\s"'|><&]+
+
+# Built-in shell commands
+builtin_command ::= "cd" | "pwd" | "echo" | "export" | "unset" | "env" | 
+                   "exit" | "help" | "history" | "type"
+
+# LLM actions are now handled entirely by the LLM
+# No keyword parsing - the LLM decides when to call tools based on natural language
+
+# Context management
+context_scope ::= "global" | "function" | "local"
+
+# Lexical tokens
+IDENTIFIER ::= [a-zA-Z_][a-zA-Z0-9_]*
+FILENAME ::= [a-zA-Z0-9_./\-]+
+VALUE ::= QUOTED_STRING | UNQUOTED_STRING | VARIABLE_EXPANSION
+NEWLINE ::= "\n" | "\r\n"
+WHITESPACE ::= [ \t]+
+
+# Comments (within code blocks)
+COMMENT ::= "#" [^\n]*
+
+# Special characters
+SPECIAL_CHARS ::= "|" | ">" | "<" | "&" | ";" | "(" | ")" | "{" | "}" | 
+                 "`" | "$" | "=" | "," | "\"" | "'"
+
+# Operators
+PIPE ::= "|"
+REDIRECT_OUT ::= ">"
+REDIRECT_IN ::= "<"
+REDIRECT_APPEND ::= ">>"
+BACKGROUND ::= "&"
+COMMAND_SEP ::= ";"
+
+# Language keywords
+KEYWORDS ::= "func" | "if" | "then" | "else" | "fi" | "while" | "do" | "done" |
+            "for" | "in" | "case" | "esac" | "function" | "return" | "local"
+
+# Precedence and associativity
+# (from highest to lowest precedence)
+# 1. Variable expansion: $VAR, ${VAR}
+# 2. Quote resolution: "...", '...'
+# 3. Command substitution: $(...)
+# 4. Redirection: >, <, >>
+# 5. Pipes: |
+# 6. Command separation: ;
+# 7. Background execution: &
+
+# Semantic rules:
+# 1. Headers (lines starting with #) are non-actionable comments/labels
+# 2. Markdown paragraphs are sent to LLM for natural language processing
+# 3. LLM decides when to call tools (read_file, clear_context, etc.) based on content
+# 4. Code blocks are executed as shell commands
+# 5. Functions create local context scope
+# 6. Global context persists across the entire script
+# 7. LLM can modify context state through tool calls
+# 8. Shell commands operate within current context
+
+# Example valid syntax:
+
+# Markdown paragraph (LLM processing):
+# Please read the configuration file config.json and explain the database settings.
+
+# Code block (shell execution):
+# ```bash
+# echo "Processing configuration..."
+# cat config.json | jq '.database'
+# ```
+
+# Function declaration:
+# func deploy(environment) {
+#   Please check if the environment parameter is valid for deployment.
+#   
+#   ```bash
+#   echo "Deploying to $environment"
+#   ./deploy.sh $environment
+#   ```
+#   
+#   Please verify that the deployment completed successfully.
+# }
+
+# Function call:
+# ```bash
+# deploy("production")
+# ```

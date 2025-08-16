@@ -1,0 +1,5 @@
+# Reading nonexistent file
+
+Read ./kek.lol
+
+What's in the file? If there was an error read file ./src/main.rs.

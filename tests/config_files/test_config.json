@@ -1,0 +1,16 @@
+{
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "name": "aish_db"
+  },
+  "logging": {
+    "level": "info",
+    "file": "/var/log/aish.log"
+  },
+  "features": {
+    "markdown_scripting": true,
+    "llm_actions": true,
+    "context_management": true
+  }
+}

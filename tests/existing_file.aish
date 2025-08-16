@@ -1,0 +1,5 @@
+# Read existing file
+
+Read ./src/shell.rs
+
+What's in the file? If there was an error read ./src/main.rs
