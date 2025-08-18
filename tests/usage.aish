@@ -1,0 +1,19 @@
+# Test agent
+
+func test_agent(dirs):
+  compile
+  run tests
+  return summary
+
+# Testing workflow
+
+Main agent, purpose is to coordinate subagents.
+
+dirs = Find test dirs
+for dir in dirs:
+  summary = test_agent(dir)
+
+
+
+
+

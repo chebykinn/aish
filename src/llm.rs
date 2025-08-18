@@ -195,6 +195,93 @@ impl AnthropicClient {
         self.analyze_context(context, &prompt).await
     }
 
+    pub async fn analyze_with_message_history(&self, messages: &Vec<crate::context::Message>, request: &str) -> Result<String, LLMError> {
+        // Convert our Message type to Anthropic's Message type
+        let anthropic_messages: Vec<Message> = messages.iter()
+            .filter(|m| m.role != "system") // Anthropic handles system messages separately
+            .map(|m| Message {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            })
+            .collect();
+
+        // Collect system messages for system prompt
+        let system_messages: Vec<String> = messages.iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.clone())
+            .collect();
+
+        let system_prompt = if system_messages.is_empty() {
+            format!(
+                "You are an AI assistant helping with shell script analysis and automation. \
+                 Analyze the conversation history and respond to: {}",
+                request
+            )
+        } else {
+            format!(
+                "You are an AI assistant helping with shell script analysis and automation. \
+                 Context from previous actions:\n{}\n\n\
+                 Based on the conversation history, respond to: {}",
+                system_messages.join("\n\n"),
+                request
+            )
+        };
+
+        let mut api_messages = anthropic_messages;
+        api_messages.push(Message {
+            role: "user".to_string(),
+            content: request.to_string(),
+        });
+
+        let request = AnthropicRequest {
+            model: self.model.clone(),
+            max_tokens: 1000,
+            messages: api_messages,
+            system: Some(system_prompt),
+            tools: None,
+        };
+
+        let response = self
+            .client
+            .post("https://api.anthropic.com/v1/messages")
+            .header("Content-Type", "application/json")
+            .header("X-API-Key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(LLMError::RequestFailed(error_text));
+        }
+
+        let anthropic_response: AnthropicResponse = response
+            .json()
+            .await
+            .map_err(|e| LLMError::ParseError(e.to_string()))?;
+
+        if let Some(content) = anthropic_response.content.first() {
+            if let Some(ref text) = content.text {
+                Ok(text.clone())
+            } else {
+                Err(LLMError::ParseError("No text in content block".to_string()))
+            }
+        } else {
+            Err(LLMError::ParseError("No content in response".to_string()))
+        }
+    }
+
+    pub async fn summarize_with_message_history(&self, messages: &Vec<crate::context::Message>, request: &str) -> Result<String, LLMError> {
+        let prompt = format!(
+            "Based on the conversation history, please summarize: {}\n\n\
+             Focus on the most important points and actionable insights.",
+            request
+        );
+        
+        self.analyze_with_message_history(messages, &prompt).await
+    }
+
     pub async fn process_with_tools(&self, context: &str, request: &str, processor: &mut crate::context::LLMActionProcessor) -> Result<String, LLMError> {
         let tools = self.get_available_tools();
         
@@ -332,38 +419,8 @@ impl AnthropicClient {
     }
 
     async fn execute_tool(&self, tool_name: &str, input: &Value, processor: &mut crate::context::LLMActionProcessor) -> Result<String, LLMError> {
-        use crate::context::LLMAction;
-        
-        let action = match tool_name {
-            "read_file" => {
-                if let Some(filename) = input.get("filename").and_then(|v| v.as_str()) {
-                    LLMAction::ReadFile { filename: filename.to_string() }
-                } else {
-                    return Err(LLMError::ParseError("Missing filename parameter".to_string()));
-                }
-            },
-            "clear_context" => LLMAction::ClearContext,
-            "analyze" => {
-                if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
-                    LLMAction::Analyze { content: content.to_string() }
-                } else {
-                    return Err(LLMError::ParseError("Missing content parameter".to_string()));
-                }
-            },
-            "add_to_context" => {
-                if let Some(content) = input.get("content").and_then(|v| v.as_str()) {
-                    LLMAction::AddToContext { content: content.to_string() }
-                } else {
-                    return Err(LLMError::ParseError("Missing content parameter".to_string()));
-                }
-            },
-            _ => return Err(LLMError::ParseError(format!("Unknown tool: {}", tool_name))),
-        };
-
-        match processor.process_action(action).await {
-            Ok(result) => Ok(result),
-            Err(e) => Err(LLMError::RequestFailed(e.to_string())),
-        }
+        // This method is deprecated - tools are now handled directly in the processor
+        Err(LLMError::ParseError("Tool execution moved to processor".to_string()))
     }
 }
 
@@ -425,11 +482,7 @@ impl LLMClient {
                 if let Some(ref client) = self.anthropic_client {
                     match client.analyze_context(context, content).await {
                         Ok(response) => {
-                            let prefixed_response = response.lines()
-                                .map(|line| format!("[LLM] {}", line))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            Ok(prefixed_response)
+                            Ok(response)
                         },
                         Err(e) => Ok(format!("[SYS] Analysis failed: {}", e)),
                     }
@@ -439,7 +492,7 @@ impl LLMClient {
             }
             ClientType::Mock => {
                 let prefixed_response = content.lines()
-                    .map(|line| format!("[LLM] [Mock Analysis] {}", line))
+                    .map(|line| format!("[Mock Analysis] {}", line))
                     .collect::<Vec<_>>()
                     .join("\n");
                 Ok(prefixed_response)
@@ -453,11 +506,7 @@ impl LLMClient {
                 if let Some(ref client) = self.anthropic_client {
                     match client.summarize_context(context, content).await {
                         Ok(response) => {
-                            let prefixed_response = response.lines()
-                                .map(|line| format!("[LLM] {}", line))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            Ok(prefixed_response)
+                            Ok(response)
                         },
                         Err(e) => Ok(format!("[SYS] Summarization failed: {}", e)),
                     }
@@ -467,7 +516,7 @@ impl LLMClient {
             }
             ClientType::Mock => {
                 let prefixed_response = content.lines()
-                    .map(|line| format!("[LLM] [Mock Summary] {}", line))
+                    .map(|line| format!("[Mock Summary] {}", line))
                     .collect::<Vec<_>>()
                     .join("\n");
                 Ok(prefixed_response)
@@ -476,6 +525,66 @@ impl LLMClient {
     }
 
 
+    pub async fn analyze_with_history(&self, messages: &Vec<crate::context::Message>, content: &str) -> Result<String, LLMError> {
+        match self.client_type {
+            ClientType::Anthropic => {
+                if let Some(ref client) = self.anthropic_client {
+                    match client.analyze_with_message_history(messages, content).await {
+                        Ok(response) => {
+                            Ok(response)
+                        },
+                        Err(e) => Ok(format!("[SYS] Analysis failed: {}", e)),
+                    }
+                } else {
+                    Ok("[SYS] No Anthropic client available".to_string())
+                }
+            }
+            ClientType::Mock => {
+                let prefixed_response = content.lines()
+                    .map(|line| format!("[Mock Analysis] {}", line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(prefixed_response)
+            }
+        }
+    }
+
+    pub async fn summarize_with_history(&self, messages: &Vec<crate::context::Message>, content: &str) -> Result<String, LLMError> {
+        match self.client_type {
+            ClientType::Anthropic => {
+                if let Some(ref client) = self.anthropic_client {
+                    match client.summarize_with_message_history(messages, content).await {
+                        Ok(response) => {
+                            Ok(response)
+                        },
+                        Err(e) => Ok(format!("[SYS] Summarization failed: {}", e)),
+                    }
+                } else {
+                    Ok("[SYS] No Anthropic client available".to_string())
+                }
+            }
+            ClientType::Mock => {
+                let prefixed_response = content.lines()
+                    .map(|line| format!("[Mock Summary] {}", line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(prefixed_response)
+            }
+        }
+    }
+
+    pub async fn process_with_tools_and_history(&self, messages: &Vec<crate::context::Message>) -> Result<(String, Vec<(String, serde_json::Value)>, usize), LLMError> {
+        match self.client_type {
+            ClientType::Anthropic => {
+                self.process_with_anthropic_tools_and_history(messages).await
+            }
+            ClientType::Mock => {
+                let response = "[Mock] Processed message history".to_string();
+                Ok((response, Vec::new(), 0)) // Mock returns 0 tokens
+            }
+        }
+    }
+
     pub async fn process_with_tools(&self, context: &str, content: &str) -> Result<(String, Vec<(String, serde_json::Value)>, usize), LLMError> {
         match self.client_type {
             ClientType::Anthropic => {
@@ -483,12 +592,183 @@ impl LLMClient {
             }
             ClientType::Mock => {
                 let prefixed_response = content.lines()
-                    .map(|line| format!("[LLM] [Mock] {}", line))
+                    .map(|line| format!("[Mock] {}", line))
                     .collect::<Vec<_>>()
                     .join("\n");
                 Ok((prefixed_response, Vec::new(), 0)) // Mock returns 0 tokens
             }
         }
+    }
+
+    async fn process_with_anthropic_tools_and_history(&self, messages: &Vec<crate::context::Message>) -> Result<(String, Vec<(String, serde_json::Value)>, usize), LLMError> {
+        use serde::Deserialize;
+        
+        #[derive(Deserialize)]
+        struct ToolResponse {
+            content: Vec<ToolContentBlock>,
+            usage: Option<ToolUsage>,
+        }
+        
+        #[derive(Deserialize)]
+        struct ToolUsage {
+            input_tokens: usize,
+            output_tokens: usize,
+        }
+        
+        #[derive(Deserialize)]
+        struct ToolContentBlock {
+            #[serde(rename = "type")]
+            content_type: String,
+            text: Option<String>,
+            name: Option<String>,
+            input: Option<Value>,
+        }
+
+        let tools = vec![
+            serde_json::json!({
+                "name": "read_file",
+                "description": "Read a file into the context for analysis",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "Path to the file to read"}
+                    },
+                    "required": ["filename"]
+                }
+            }),
+            serde_json::json!({
+                "name": "clear_context", 
+                "description": "Clear the current context",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }),
+            serde_json::json!({
+                "name": "add_to_context",
+                "description": "Add information to the current context", 
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "Content to add to context"}
+                    },
+                    "required": ["content"]
+                }
+            }),
+            serde_json::json!({
+                "name": "execute_command",
+                "description": "Execute a shell command and return its output",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command to execute"}
+                    },
+                    "required": ["command"]
+                }
+            })
+        ];
+        
+        // Convert our Message type to the API format
+        let final_messages: Vec<serde_json::Value> = messages.iter()
+            .filter(|m| m.role != "system")
+            .map(|m| serde_json::json!({
+                "role": m.role,
+                "content": m.content
+            }))
+            .collect();
+        
+        // Collect system messages for system prompt
+        let system_messages: Vec<String> = messages.iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.clone())
+            .collect();
+
+        let context_summary = if system_messages.is_empty() {
+            "No context loaded".to_string()
+        } else {
+            format!("CONTEXT LOADED: {}", system_messages.join("\n"))
+        };
+        
+        let system_prompt = format!(
+            "You are an AI assistant helping with shell automation and file operations. \
+             You operate in AGENTIC mode - you can perform multiple sequential actions to complete complex tasks.\n\n\
+             Available tools:\n\
+             - read_file: Read files into context for analysis\n\
+             - clear_context: Clear current context\n\
+             - add_to_context: Add information to context\n\
+             - execute_command: Execute shell commands and get their output\n\n\
+             IMPORTANT INSTRUCTIONS:\n\
+             1. When given a task, think about what information you need to complete it\n\
+             2. Use tools to gather information, then analyze and provide insights\n\
+             3. If you need multiple steps, use tools in sequence (each tool call triggers a follow-up)\n\
+             4. If there is no further action needed after using a tool, do NOT respond - stay silent\n\
+             5. Be proactive - if a task requires reading files, analysis, or context building, do it automatically\n\
+             6. ALWAYS UTILIZE CONTEXT: If context is loaded, use it to answer questions directly\n\n\
+             {}", 
+            context_summary
+        );
+        
+        let request = serde_json::json!({
+            "model": DEFAULT_MODEL,
+            "max_tokens": 1000,
+            "messages": final_messages,
+            "system": system_prompt,
+            "tools": tools
+        });
+        
+        let response = reqwest::Client::new()
+            .post("https://api.anthropic.com/v1/messages")
+            .header("Content-Type", "application/json")
+            .header("X-API-Key", env::var("ANTHROPIC_API_KEY").unwrap_or_default())
+            .header("anthropic-version", "2023-06-01")
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| LLMError::NetworkError(e))?;
+            
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(LLMError::RequestFailed(error_text));
+        }
+        
+        let tool_response: ToolResponse = response
+            .json()
+            .await
+            .map_err(|e| LLMError::ParseError(e.to_string()))?;
+        
+        let mut results = Vec::new();
+        let mut tool_calls = Vec::new();
+        
+        for content_block in &tool_response.content {
+            match content_block.content_type.as_str() {
+                "text" => {
+                    if let Some(ref text) = content_block.text {
+                        results.push(text.clone());
+                    }
+                },
+                "tool_use" => {
+                    if let (Some(name), Some(input)) = (&content_block.name, &content_block.input) {
+                        tool_calls.push((name.clone(), input.clone()));
+                    }
+                },
+                _ => {}
+            }
+        }
+        
+        let response_text = if results.is_empty() {
+"Processed request".to_string()
+        } else {
+            results.join("\n")
+        };
+        
+        // Extract token usage
+        let total_tokens = if let Some(usage) = &tool_response.usage {
+            usage.input_tokens + usage.output_tokens
+        } else {
+            0
+        };
+        
+        Ok((response_text, tool_calls, total_tokens))
     }
 
     async fn process_with_anthropic_tools(&self, context: &str, content: &str) -> Result<(String, Vec<(String, serde_json::Value)>, usize), LLMError> {
@@ -623,12 +903,7 @@ impl LLMClient {
             match content_block.content_type.as_str() {
                 "text" => {
                     if let Some(ref text) = content_block.text {
-                        // Prefix each line with [LLM]
-                        let prefixed_text = text.lines()
-                            .map(|line| format!("[LLM] {}", line))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        results.push(prefixed_text);
+                        results.push(text.clone());
                     }
                 },
                 "tool_use" => {
@@ -641,7 +916,7 @@ impl LLMClient {
         }
         
         let response_text = if results.is_empty() {
-            "[LLM] Processed request".to_string()
+"Processed request".to_string()
         } else {
             results.join("\n")
         };

@@ -160,25 +160,6 @@ impl Shell {
                 crate::context::LLMAction::Comment { content } => {
                     println!("[CMD] {} {}", token_usage, content);
                 }
-                // These cases should no longer occur due to new architecture, but keeping for safety
-                crate::context::LLMAction::ReadFile { filename } => {
-                    println!("[CMD] {} Read file: {}", token_usage, filename);
-                }
-                crate::context::LLMAction::ClearContext => {
-                    println!("[CMD] {} Clear context", token_usage);
-                }
-                crate::context::LLMAction::Analyze { content } => {
-                    println!("[CMD] {} Analyze: {}", token_usage, content);
-                }
-                crate::context::LLMAction::Summarize { content } => {
-                    println!("[CMD] {} Summarize: {}", token_usage, content);
-                }
-                crate::context::LLMAction::AddToContext { content } => {
-                    println!("[CMD] {} Add to context: {}", token_usage, content);
-                }
-                crate::context::LLMAction::ExecuteCommand { command } => {
-                    println!("[CMD] {} Execute: {}", token_usage, command);
-                }
             }
 
             match self.llm_processor.process_action(action.clone()).await {
@@ -313,19 +294,18 @@ impl Shell {
                 let token_usage = self.llm_processor.get_token_usage();
                 match &action {
                     crate::context::LLMAction::Comment { content } => {
-                        println!("[AI] {} {}", token_usage, content);
+                        println!("[SYS] {} {}", token_usage, content);
                     }
-                    _ => {} // Other action types handled normally
                 }
 
                 match self.llm_processor.process_action(action).await {
                     Ok(result) => {
                         println!("{}", result);
                         let updated_tokens = self.llm_processor.get_token_usage();
-                        println!("[AI] Complete: {}", updated_tokens);
+                        println!("[SYS] Complete: {}", updated_tokens);
                     }
                     Err(e) => {
-                        eprintln!("AI Error: {}", e);
+                        eprintln!("[SYS] Error: {}", e);
                     }
                 }
             }
